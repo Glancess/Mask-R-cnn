@@ -45,6 +45,10 @@ class BackboneWithFPN(nn.Module):
         return pyramid
 
 
+"""
+我们根据算子FPN，得到 处理后的C2-C5，同时加入P6. 继续返回了一个字典。
+"""
+
 if __name__ == "__main__":
     # 在项目目录运行：python -m Model.BackboneWithFPN
     model = BackboneWithFPN(weights=None).eval()

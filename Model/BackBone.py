@@ -57,3 +57,8 @@ class ResNet50Backbone(nn.Module):
                 "c5": c5,
             }
         )
+
+
+"""
+我们得到resnet50大额 C2-C5，采取一个字典的存放
+"""

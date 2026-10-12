@@ -96,6 +96,7 @@ class RPNModule(nn.Module):
         pyramid,
         targets=None,
         image_sizes=None,
+        compute_loss=None,
     ):
         """
         images:
@@ -133,6 +134,10 @@ class RPNModule(nn.Module):
             如果所有图片大小一样，可以不传，
             自动从 images.shape 获取。
 
+        compute_loss:
+            bool或None。None跟随self.training；True即使验证也返回RPN loss。
+            仅切换内部RPN的行为，不会把外面的ResNet切回训练模式。
+
         return:
             tuple(proposals, losses)
             proposals:
@@ -156,7 +161,10 @@ class RPNModule(nn.Module):
 
         B, _, H, W = images.shape
 
-        if self.training and targets is None:
+        if compute_loss is None:
+            compute_loss = self.training
+
+        if compute_loss and targets is None:
             raise ValueError("RPN训练需要targets；只检查预测时请先调用rpn.eval()。")
 
         # 如果 batch 中图片全部一样大，可以直接推断
@@ -173,11 +181,15 @@ class RPNModule(nn.Module):
         # features = list(features.values())
         #
         # 然后再传给 RPNHead
-        proposals, losses = self.rpn(
-            image_list,
-            pyramid,
-            targets,
-        )
+        # torchvision 用 training 标志决定是否计算 RPN loss，以及候选框上限。
+        # 验证 loss 时用训练版候选框配置，但不更新参数；调用结束恢复原标志。
+        # RPN head 没有 BN/Dropout，不需要把整个模型切回 train()。
+        previous_training = self.rpn.training
+        self.rpn.training = compute_loss
+        try:
+            proposals, losses = self.rpn(image_list, pyramid, targets)
+        finally:
+            self.rpn.training = previous_training
 
         return proposals, losses  # 已经得到初步修过的框
 
@@ -192,7 +204,7 @@ if __name__ == "__main__":
     backbone.eval()
     rpn.eval()
 
-    x = torch.randn(1, 3, 128, 128)
+    x = torch.randn(3, 3, 128, 128)
 
     with torch.no_grad():
 
@@ -207,6 +219,9 @@ if __name__ == "__main__":
             images=x,
             pyramid=pyramid,
         )
+    print(type(proposals))
+    print(len(proposals))
+    print(proposals[0].shape)
 
     print("\nproposal数量：")
 
@@ -214,3 +229,20 @@ if __name__ == "__main__":
         print(f"image {i}:", boxes.shape)
 
     print("losses:", losses)
+
+"""
+anchors
+↓
+和 target["boxes"] 算 IoU
+↓
+给 anchor 打标签
+positive / negative / ignore
+↓
+按 batch_size_per_image 和 positive_fraction 采样
+↓
+计算：
+1. objectness loss
+2. bbox regression loss
+↓
+同时另一条路径生成 proposals
+"""

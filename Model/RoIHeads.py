@@ -107,6 +107,39 @@ class RoIHeads(nn.Module):
         # 每个类别一张 mask
         self.mask_predictor = nn.Conv2d(256, num_classes, kernel_size=1)
 
+    def forward_box(self, pyramid, proposals, image_shapes):
+        """
+        输入 pyramid: dict[str,Tensor]；proposals: list[float32[Ni,4]]；
+        image_shapes: list[(H,W)]，真实尺寸。返回 tuple：
+        class_logits float32[R,C]、box_regression float32[R,C*4]。
+        R=sum(Ni)，C包含背景；这里只跑 box 分支，不做分类筛选或 NMS。
+        """
+        # MultiScaleRoIAlign 用尺寸推断 stride。特征图来自 padding 后的图片，
+        # 所以这里用 padding 尺寸推断；proposal 本身仍是未补零的图片坐标。
+        # P2 stride=4，这样小尺寸 smoke test 也不会因补零过多推错 stride。
+        padded_shape = (pyramid["p2"].shape[-2] * 4, pyramid["p2"].shape[-1] * 4)
+        pool_shapes = [padded_shape] * len(image_shapes)
+        box_features = self.box_roi_pool(pyramid, proposals, pool_shapes)
+        box_features = self.box_head(box_features)
+        class_logits = self.cls_score(box_features)
+        box_regression = self.bbox_pred(box_features)
+
+        return class_logits, box_regression
+
+    def forward_mask(self, pyramid, boxes, image_shapes):
+        """
+        输入 boxes: list[float32[Ni,4]]；其余与 forward_box 相同。
+        训练传正样本 proposal；预测传经过修框、筛分、NMS 的最终框。
+        返回 mask_logits: float32[sum(Ni),C,28,28]，还没有 sigmoid。
+        """
+        padded_shape = (pyramid["p2"].shape[-2] * 4, pyramid["p2"].shape[-1] * 4)
+        pool_shapes = [padded_shape] * len(image_shapes)
+        mask_features = self.mask_roi_pool(pyramid, boxes, pool_shapes)
+        mask_features = self.mask_head(mask_features)
+        mask_logits = self.mask_predictor(mask_features)
+
+        return mask_logits
+
     def forward(
         self,
         pyramid,
@@ -142,8 +175,7 @@ class RoIHeads(nn.Module):
             list[Tensor]或None，长度B，每项float32 Tensor[N_pos_i,4]。
             训练时 mask branch 只使用 positive RoIs；列表位置不能删除或错位。
 
-            目前如果没有传，
-            为了测试网络流程，暂时直接使用 proposals。
+            必须显式传入；没有正样本时也保留每张图的空 Tensor[0,4]。
 
         返回:
             dict[str, Tensor]，三项都是原始输出，还没有softmax/sigmoid：
@@ -153,7 +185,7 @@ class RoIHeads(nn.Module):
             R_pos是mask分支输入框的总数，不一定等于R。
 
         注意:
-            这个类目前只做网络前向，不含GT匹配、采样、loss或最终NMS。
+            这个类只做网络前向；GT匹配、loss和NMS由Mask.py和utils负责。
             正式推理应该先得到最终检测框，再用这些框跑mask分支。
             mask_logits不是整张图的mask，28x28是各个RoI内的局部坐标。
         """
@@ -162,50 +194,19 @@ class RoIHeads(nn.Module):
         # Box branch
         # ==================================================
 
-        box_features = self.box_roi_pool(
-            pyramid,
-            proposals,
-            image_shapes,
+        class_logits, box_regression = self.forward_box(
+            pyramid, proposals, image_shapes
         )
-
-        # [N_total, 256, 7, 7]
-
-        box_features = self.box_head(box_features)
-
-        # [N_total, 1024]
-
-        class_logits = self.cls_score(box_features)
-
-        # [N_total, num_classes]
-
-        box_regression = self.bbox_pred(box_features)
-
-        # [N_total, num_classes * 4]
 
         # ==================================================
         # Mask branch
         # ==================================================
 
         # 正式训练时这里必须只传 positive RoIs。
-        # 现在用于跑通网络时可以先全部 proposal。
         if positive_proposals is None:
-            positive_proposals = proposals
+            raise ValueError("Training mask branch requires positive_proposals.")
 
-        mask_features = self.mask_roi_pool(
-            pyramid,
-            positive_proposals,
-            image_shapes,
-        )
-
-        # [N_pos,256,14,14]
-
-        mask_features = self.mask_head(mask_features)
-
-        # [N_pos,256,28,28]
-
-        mask_logits = self.mask_predictor(mask_features)
-
-        # [N_pos,num_classes,28,28]
+        mask_logits = self.forward_mask(pyramid, positive_proposals, image_shapes)
 
         return {
             "class_logits": class_logits,
