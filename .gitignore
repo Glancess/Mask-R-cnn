@@ -1,0 +1,28 @@
+# 数据和解压包留在本机，不提交到 Git。
+data/
+*.zip
+*.tar
+*.tar.gz
+
+# 训练结果和权重。
+checkpoints/
+outputs/
+*.pth
+*.pt
+*.ckpt
+
+# Python 缓存、环境、编辑器临时文件。
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+*.log
