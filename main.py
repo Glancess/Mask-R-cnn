@@ -23,7 +23,7 @@ def main():
     optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
     best_loss = float("inf")
     best_epoch = 0
-    num_epochs = 40
+    num_epochs = 100
     print(f"设备：{device} | train=120, val=25, test=25", flush=True)
 
     for epoch in range(num_epochs):
