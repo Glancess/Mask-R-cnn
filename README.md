@@ -1,5 +1,25 @@
 # Mask R-CNN + FPN：按模块理解训练与实例分割
 
+## 当前手写简化版运行方式（2026-10-13）
+
+你重新手写后的文件为 `Model/backbone.py`、`FPN.py`、`anchor.py`、`mask.py`、
+`utils/loss.py`、`engine/train1.py`、`engine/val.py`、`engine/test.py`。
+下方旧版模块介绍保留作学习笔记，文件名、config、resume 和预训练等说明不适用于当前简化版。
+
+- `Dataset/split.py` 固定 seed=0，返回 train120/val25/test25 三个 loader，不移动数据。
+- `python main.py`：直接训练，每轮结束验证五项总 loss，变好就保存 best；全部 epoch 结束后加载 best 做一次 test。
+- 验证使用 eval 和 no_grad，不更新参数和 BN 统计；不额外固定 RoI/anchor 抽样，不做 NMS 后的检测评测。
+- 项目根目录的 `best.pth` 只保存验证 loss 最低的模型参数，不保存 optimizer、划分等状态。
+- 每轮打印 train/val 总 loss、RPN 分类/回归、RoI 分类/回归、Mask loss，以及是否更新 best。
+- 训练结束读取 best，在全部 test25 上纯预测，打印每张图的 GT/预测数量和前五个分数。
+- 固定选 test loader 前 10 张，保存到项目根目录 `testimage/*_compare.png`（不按效果挑图）。
+- main 没有训练/测试开关和命令行模式。
+- 图左为 GT，右为预测，均画框和实例 mask；显示分数阈值默认 0.5，不计算 mAP。
+- 当前没有 resume。重新训练会覆盖根目录的 best.pth，想保留旧参数请先另存。
+- 划分依赖当前排序后的图片列表，训练后不要增删或重命名图片。旧 checkpoints 目录不再使用，也不自动删除。
+- 当前 Backbone 随机初始化；图片不缩放，只做归一化及右下补零。不要把跑通流程等同于检测效果好。
+- 这是图片级学习划分，不保证场景或人物独立。若旧模型见过这些 val/test，必须按新划分重新训练。
+
 这个项目保留自己写的 ResNet50 Backbone、FPN、RPN 封装、RoIHeads 和分步 `train_one_epoch`。
 复杂的 anchor / GT 匹配、RoI / GT 匹配、前景背景采样与 NMS 使用 torchvision 黑盒。
 没有加入 AMP、DDP、scheduler、WandB，也暂时不计算 AP/mAP。

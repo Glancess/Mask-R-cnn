@@ -1,107 +1,165 @@
 import torch
 import torch.nn as nn
-from torchvision.models import ResNet50_Weights
-
-from .BackboneWithFPN import BackboneWithFPN
-from .RPN import RPNModule
-from .RoIHeads import RoIHeads
-from utils.RoISampler import RoISampler
-from utils.loss import box_loss, mask_loss
-from utils.postprocess import postprocess_boxes, restore_predictions
-from utils.transform import prepare_images
+from .anchor import getFirstproposal
+from .backbone import BackBone
+from .FPN import GetPx
+from torchvision.ops import MultiScaleRoIAlign
+from torchvision.models.detection.roi_heads import RoIHeads
 
 
-class MaskRCNN(nn.Module):
-    def __init__(self, num_classes=2, weights=ResNet50_Weights.DEFAULT,
-                 min_size=400, max_size=640, num_rois=512,
-                 score_thresh=0.5, nms_thresh=0.5, detections_per_img=100):
-        """
-        输入：类别数包含背景；weights=None不下载预训练权重；其余为普通int/float。
-        保留你写的BackboneWithFPN、RPNModule、RoIHeads，这里只负责连接它们。
-        """
+class Mask(nn.Module):
+    def __init__(self):
         super().__init__()
-        if num_classes < 2 or num_rois < 4 or min_size <= 0 or max_size < min_size:
-            raise ValueError("需要至少背景+1类、num_rois>=4，且0<min_size<=max_size。")
+        self.backbone = BackBone()
+        self.fpn = GetPx()
+        self.firstproposalandloss = getFirstproposal()
+        self.roi_heads = RoIHeads(
+            box_roi_pool=None,
+            box_head=None,
+            box_predictor=None,
+            fg_iou_thresh=0.5,
+            bg_iou_thresh=0.5,
+            batch_size_per_image=64,
+            positive_fraction=0.25,
+            bbox_reg_weights=(10.0, 10.0, 5.0, 5.0),
+            score_thresh=0.05,
+            nms_thresh=0.5,
+            detections_per_img=100,
+        )
+        # 检测分支：每个 proposal 提取成 7×7。
+        self.box_roi_align = MultiScaleRoIAlign(
+            featmap_names=["c1", "c2", "c3", "c4"],
+            output_size=7,
+            sampling_ratio=2,
+        )
+        self.branchOp1 = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(256 * 7 * 7, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 1024),
+            nn.ReLU(),
+        )
 
-        self.backbone = BackboneWithFPN(weights=weights)
-        self.rpn = RPNModule()
-        self.roi_sampler = RoISampler(num_rois, score_thresh, nms_thresh, detections_per_img)
-        self.roi_heads = RoIHeads(num_classes=num_classes)
+        self.cls = nn.Linear(1024, 2)
+        self.bbox = nn.Linear(1024, 2 * 4)
+        # Mask 分支：每个前景 proposal 提取成 14×14。
+        self.mask_roi_align = MultiScaleRoIAlign(
+            featmap_names=["c1", "c2", "c3", "c4"],
+            output_size=14,
+            sampling_ratio=2,
+        )
+        self.branchOp2 = nn.Sequential(
+            nn.Conv2d(256, 256, 3, 1, 1),
+            nn.ReLU(),
+            nn.Conv2d(256, 256, 3, 1, 1),
+            nn.ReLU(),
+            nn.Conv2d(256, 256, 3, 1, 1),
+            nn.ReLU(),
+            nn.Conv2d(256, 256, 3, 1, 1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(256, 256, 2, 2),
+            nn.ReLU(),
+            nn.Conv2d(256, 2, 1),
+        )
 
-        self.num_classes = num_classes
-        self.min_size = min_size
-        self.max_size = max_size
-        self.num_rois = num_rois
-        self.score_thresh = score_thresh
-        self.nms_thresh = nms_thresh
-        self.detections_per_img = detections_per_img
+    def forward(self, imageList, targets=None, Train=True):
+        # imageList.tensors：Tensor，[B, 3, Hpad, Wpad]。
+        # Backbone 接收 Tensor，不是整个 ImageList 对象。
+        C = self.backbone(imageList.tensors)
 
-    def forward(self, images, targets=None, compute_loss=None):
+        # C：字典，包含 Backbone 的四层特征。
+        # P：字典，包含 FPN 的五层特征。
+        P = self.fpn(C)
+
+        # 根据你之前写的接口，返回一个字典：
+        # firstLoss：整个 batch 的 RPN loss 字典。
+        # firstproposal：每张图片的 proposal Tensor 组成的列表。
+        # Train 控制是否需要监督目标和 loss；model.eval() 控制 BN 等层。
+        first_result = self.firstproposalandloss(imageList, P, targets, Train)
+
+        if Train:
+            if targets is None:
+                raise ValueError("训练时需要传入 targets")
+
+            Secondproposals, matched_idxs, labels, regression_targets = (
+                self.roi_heads.select_training_samples(
+                    first_result["firstproposal"],
+                    targets,
+                )
+            )
+
+            """
+                首先对于得到的firstproposal打label，进行筛选（sampling）
+            """
+            mask_proposals = []
+            mask_matched_idxs = []
+            mask_labels = []
+
+            for i in range(len(Secondproposals)):
+                fg = labels[i] > 0
+
+                mask_proposals.append(Secondproposals[i][fg])
+                mask_matched_idxs.append(matched_idxs[i][fg])
+                mask_labels.append(labels[i][fg])
+
+        else:
+            # 预测没有 GT，不匹配、不抽样。
+            # 直接使用 RPN 已经修过的 proposal。
+            Secondproposals = first_result["firstproposal"]
+
         """
-        images: list[float32 Tensor[3,H,W]]，RGB [0,1]，不是已经normalize的batch。
-        targets: list[dict]或None，boxes float32[N,4]、labels int64[N]、masks uint8[N,H,W]。
-        compute_loss: None跟随train/eval；验证loss显式传True；预测传False。
-
-        返回：
-            算loss时 dict[str,标量Tensor]，共5项，交给外面sum、backward。
-            预测时 list[dict]，每图boxes[Di,4]/scores[Di]/labels[Di]/masks[Di,1,H,W]。
+        根据列表位置，知道框来自哪张图片。
+        根据每个框的宽高，选择 P2～P5 中的一层。
+        将图片上的框坐标映射到对应特征图。
+        提取固定大小的特征。
+        输出对应的特征图的tensor
         """
-        if compute_loss is None:
-            compute_loss = self.training
-        if compute_loss and targets is None:
-            raise ValueError("训练/验证loss需要GT；纯预测请model.eval()并不传targets。")
+        # RPN 输出的 firstproposal 已经 decode 过了。
+        # 坐标对应缩放后、填充前的图片，不是特征图坐标。
+        branch1features = self.box_roi_align(P, Secondproposals, imageList.image_sizes)
 
-        # 1. 预处理：缩放image/box/mask、RGB normalize、补零并成BCHW。
-        images, targets, image_shapes, original_shapes = prepare_images(
-            images, targets, self.min_size, self.max_size
-        )
+        x = self.branchOp1(branch1features)
+        cls_logits = self.cls(x)  # Tensor，[R, 2]
+        bbox_deltas = self.bbox(x)  # Tensor，[R, 8]
 
-        # 2. 一批图片只提取一次共享特征，RPN在P2~P6生成候选框。
-        pyramid = self.backbone(images)
-        proposals, rpn_losses = self.rpn(
-            images, pyramid, targets, image_shapes, compute_loss=compute_loss
-        )
-
-        if compute_loss:
-            # 3. 用GT给proposal标记、采样；mask还要记住匹配的GT实例下标。
-            sampled_proposals, matched_idxs, labels, regression_targets = self.roi_sampler(
-                proposals, targets,
-            )
-            class_logits, box_regression = self.roi_heads.forward_box(
-                pyramid, sampled_proposals, image_shapes
+        if not Train:
+            # 第二次 decode、裁剪、分类分数筛选、按类别 NMS。
+            # 使用 roi_heads 自己的 BoxCoder，编码和解码权重保持一致。
+            boxes, scores, pred_labels = self.roi_heads.postprocess_detections(
+                cls_logits,
+                bbox_deltas,
+                Secondproposals,
+                imageList.image_sizes,
             )
 
-            positive_proposals = []
-            positive_labels = []
-            positive_matched_idxs = []
-            for boxes_i, labels_i, matched_i in zip(sampled_proposals, labels, matched_idxs):
-                positive = torch.where(labels_i > 0)[0]
-                positive_proposals.append(boxes_i[positive])
-                positive_labels.append(labels_i[positive])
-                positive_matched_idxs.append(matched_i[positive])
-            mask_logits = self.roi_heads.forward_mask(
-                pyramid, positive_proposals, image_shapes
-            )
+            # 预测时，Mask 分支接收最终检测框。
+            mask_proposals = boxes
 
-            # 4. 两项RPN loss + 分类/回归/mask三项loss。这里不做backward/step。
-            losses = dict(rpn_losses)
-            losses.update(box_loss(
-                class_logits, box_regression, labels, regression_targets
-            ))
-            losses["loss_mask"] = mask_loss(
-                mask_logits, positive_proposals, positive_labels,
-                positive_matched_idxs, targets,
-            )
-            return losses
+        # 训练：只提取抽样后的前景框特征。
+        # 预测：提取第二次修框、NMS 后的最终框特征。
+        branch2features = self.mask_roi_align(P, mask_proposals, imageList.image_sizes)
 
-        # 5. 预测没有GT：先分类、修框、阈值过滤、按类别NMS；然后才跑mask。
-        class_logits, box_regression = self.roi_heads.forward_box(pyramid, proposals, image_shapes)
-        results = postprocess_boxes(
-            class_logits, box_regression, proposals, image_shapes,
-            self.roi_sampler,
-        )
-        detection_boxes = [result["boxes"] for result in results]
-        mask_logits = self.roi_heads.forward_mask(pyramid, detection_boxes, image_shapes)
+        mask_logits = self.branchOp2(branch2features)
+        # 训练：[F, 2, 28, 28]
+        # 预测：[D, 2, 28, 28]，D 是整个 batch 的最终检测框总数。
 
-        # 6. 框回到原图坐标，28x28局部mask贴回原图，方便直接画图。
-        return restore_predictions(results, mask_logits, image_shapes, original_shapes)
+        if Train:
+            return {
+                "firstLoss": first_result["firstLoss"],
+                "cls_logits": cls_logits,
+                "bbox_deltas": bbox_deltas,
+                "labels": labels,
+                "regression_targets": regression_targets,
+                "mask_logits": mask_logits,
+                "mask_proposals": mask_proposals,
+                "mask_matched_idxs": mask_matched_idxs,
+                "mask_labels": mask_labels,
+            }
+
+        else:
+            return {
+                "boxes": boxes,  # list[Tensor]，每张图 [Di, 4]
+                "scores": scores,  # list[Tensor]，每张图 [Di]
+                "labels": pred_labels,  # list[Tensor]，每张图 [Di]
+                "mask_logits": mask_logits,  # Tensor，[D, 2, 28, 28]
+            }
