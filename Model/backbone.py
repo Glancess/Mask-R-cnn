@@ -9,14 +9,7 @@ class BackBone(nn.Module):
         ren = resnet50()
         self.stem = nn.Sequential(
             nn.Conv2d(3, 64, 7, 2, 3, bias=False),
-            nn.BatchNorm2d(
-                64,
-                eps=1e-05,
-                momentum=0.1,
-                affine=True,
-                bias=True,
-                track_running_stats=True,
-            ),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(
                 kernel_size=3, stride=2, padding=1, dilation=1, ceil_mode=False
