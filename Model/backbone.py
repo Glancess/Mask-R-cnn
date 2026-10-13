@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
-from torchvision.models import resnet50
+from torchvision.models import resnet50, ResNet50_Weights
 
 
 class BackBone(nn.Module):
     def __init__(self):
         super().__init__()
-        ren = resnet50()
+        ren = resnet50(weights=ResNet50_Weights.DEFAULT)
         self.stem = nn.Sequential(
             nn.Conv2d(3, 64, 7, 2, 3, bias=False),
             nn.BatchNorm2d(64),
