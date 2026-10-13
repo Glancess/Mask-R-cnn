@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from .anchor import getFirstproposal
 from .backbone import BackBone
-from .FPN import GetPx
+from .fpn import GetPx
 from torchvision.ops import MultiScaleRoIAlign
 from torchvision.models.detection.roi_heads import RoIHeads
 
