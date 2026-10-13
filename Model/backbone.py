@@ -7,13 +7,12 @@ class BackBone(nn.Module):
     def __init__(self):
         super().__init__()
         ren = resnet50(weights=ResNet50_Weights.DEFAULT)
+        # stem 也复用预训练层，避免前面随机初始化、后面使用预训练参数。
         self.stem = nn.Sequential(
-            nn.Conv2d(3, 64, 7, 2, 3, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(
-                kernel_size=3, stride=2, padding=1, dilation=1, ceil_mode=False
-            ),
+            ren.conv1,
+            ren.bn1,
+            ren.relu,
+            ren.maxpool,
         )
         self.c2 = ren.layer1
         self.c3 = ren.layer2

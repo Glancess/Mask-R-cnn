@@ -3,6 +3,12 @@ import torch
 
 def train_one_epoch(model, data_loader, optimizer, criterion, device):
     model.train()
+    # 每批只有两张图，保留预训练 BN 的统计量；卷积和 BN 参数仍可学习。
+    # 每轮 model.train() 会重新开启 BN，所以每轮都要设置一次。
+    for layer in model.backbone.modules():
+        if isinstance(layer, torch.nn.BatchNorm2d):
+            layer.eval()
+
     total_loss = 0.0
     num_images = 0
     details = {"rpn_cls": 0.0, "rpn_bbox": 0.0, "cls": 0.0, "bbox": 0.0, "mask": 0.0}
