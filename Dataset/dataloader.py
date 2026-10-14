@@ -1,10 +1,11 @@
 import torch
 
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from torchvision.models.detection.image_list import ImageList
 from torchvision.transforms import functional as F
 
-from .dataset import PennFudanDataset
+# from .dataset import PennFudanDataset
+from .Vocdataset import VocDataset
 
 
 def collate_fn(batch):
@@ -57,31 +58,67 @@ def collate_fn(batch):
     return imageList, targets
 
 
-def get_dataloader(root, batch_size=2, shuffle=True, num_workers=0):
-    """
-    root：数据集路径，内部包含 PNGImages、PedMasks、Annotation。
-    返回：DataLoader。
-    """
-    dataset = PennFudanDataset(root)
+# def get_dataloader(root, batch_size=2, shuffle=True, num_workers=0):
+#     """
+#     root：数据集路径，内部包含 PNGImages、PedMasks、Annotation。
+#     返回：DataLoader。
+#     """
+#     dataset = PennFudanDataset(root)
 
-    data_loader = DataLoader(
-        dataset,
+#     data_loader = DataLoader(
+#         dataset,
+#         batch_size=batch_size,
+#         shuffle=shuffle,
+#         num_workers=num_workers,
+#         collate_fn=collate_fn,
+#     )
+
+#     return data_loader
+
+
+def getVOC_dataloader(root, batch_size=2, shuffle=True, num_workers=0):
+    """
+    root：包含 VOCdevkit/VOC2012 的目录。
+    返回：train_loader、val_loader、test_loader，三份图片互不重叠。
+    """
+    # VOC2012 官方 test 没有公开分割 GT，采用下面的自定义学习划分。
+    # 官方 train1464：1264训练、200验证；官方 val1449：最终留出测试。
+    # 不搬动原图，不新建 split 文件。固定种子只固定划分，不固定验证抽样。
+    train_all = VocDataset(root, "train")
+    train_dataset, val_dataset = random_split(
+        train_all, [1264, 200], generator=torch.Generator().manual_seed(0)
+    )
+    test_dataset = VocDataset(root, "val")
+    train_loader = DataLoader(
+        train_dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
         collate_fn=collate_fn,
     )
 
-    return data_loader
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+    )
+
+    test_loader = DataLoader(
+        test_dataset, batch_size=1, shuffle=False,
+        num_workers=num_workers, collate_fn=collate_fn,
+    )
+    return train_loader, val_loader, test_loader
 
 
 if __name__ == "__main__":
-    data_loader = get_dataloader(
-        root="/Users/alen/Code/Pytorcc/projects/Mask-R-cnn/data/PennFudanPed",
+    train_loader, val_loader, test_loader = getVOC_dataloader(
+        root="/Users/alen/Code/Pytorcc/projects/Mask-R-cnn/data",
         batch_size=2,
     )
 
-    imageList, targets = next(iter(data_loader))
+    imageList, targets = next(iter(train_loader))
 
     print("batch 图片：", imageList.tensors.shape)
     print("每张图有效大小：", imageList.image_sizes)

@@ -10,9 +10,9 @@ from torchvision.models.detection.roi_heads import RoIHeads
 class Mask(nn.Module):
     def __init__(self):
         super().__init__()
-        self.backbone = BackBone()
-        self.fpn = GetPx()
-        self.firstproposalandloss = getFirstproposal()
+        self.backbone = BackBone()  # 采用resnet的
+        self.fpn = GetPx()  # 得到level
+        self.firstproposalandloss = getFirstproposal()  # RPNs level
         self.roi_heads = RoIHeads(
             box_roi_pool=None,
             box_head=None,
@@ -25,7 +25,7 @@ class Mask(nn.Module):
             score_thresh=0.05,
             nms_thresh=0.5,
             detections_per_img=100,
-        )
+        )  # 此函数来IOU+sampling，IOU与GTbox大于0.5的作为fore，否则就是back，返回label【】，筛选出来的proposal【【】【】】，匹配的GTbox
         # 检测分支：每个 proposal 提取成 7×7。
         self.box_roi_align = MultiScaleRoIAlign(
             featmap_names=["c1", "c2", "c3", "c4"],
@@ -40,8 +40,8 @@ class Mask(nn.Module):
             nn.ReLU(),
         )
 
-        self.cls = nn.Linear(1024, 2)
-        self.bbox = nn.Linear(1024, 2 * 4)
+        self.cls = nn.Linear(1024, 21)
+        self.bbox = nn.Linear(1024, 21 * 4)
         # Mask 分支：每个前景 proposal 提取成 14×14。
         self.mask_roi_align = MultiScaleRoIAlign(
             featmap_names=["c1", "c2", "c3", "c4"],
@@ -59,7 +59,7 @@ class Mask(nn.Module):
             nn.ReLU(),
             nn.ConvTranspose2d(256, 256, 2, 2),
             nn.ReLU(),
-            nn.Conv2d(256, 2, 1),
+            nn.Conv2d(256, 21, 1),
         )
 
     def forward(self, imageList, targets=None, Train=True):
@@ -116,11 +116,13 @@ class Mask(nn.Module):
         """
         # RPN 输出的 firstproposal 已经 decode 过了。
         # 坐标对应缩放后、填充前的图片，不是特征图坐标。
-        branch1features = self.box_roi_align(P, Secondproposals, imageList.image_sizes)
+        branch1features = self.box_roi_align(
+            P, Secondproposals, imageList.image_sizes
+        )  # 根据框面积选择 level；RoIAlign 用双线性插值采样，不像 RoIPool 那样对坐标取整。
 
         x = self.branchOp1(branch1features)
-        cls_logits = self.cls(x)  # Tensor，[R, 2]
-        bbox_deltas = self.bbox(x)  # Tensor，[R, 8]
+        cls_logits = self.cls(x)  # Tensor，[R, 21]，背景加20类物体。
+        bbox_deltas = self.bbox(x)  # Tensor，[R, 84]，每类4个偏移量。
 
         if not Train:
             # 第二次 decode、裁剪、分类分数筛选、按类别 NMS。
@@ -140,8 +142,8 @@ class Mask(nn.Module):
         branch2features = self.mask_roi_align(P, mask_proposals, imageList.image_sizes)
 
         mask_logits = self.branchOp2(branch2features)
-        # 训练：[F, 2, 28, 28]
-        # 预测：[D, 2, 28, 28]，D 是整个 batch 的最终检测框总数。
+        # 训练：[F, 21, 28, 28]
+        # 预测：[D, 21, 28, 28]，D 是整个 batch 的最终检测框总数。
 
         if Train:
             return {
@@ -161,5 +163,5 @@ class Mask(nn.Module):
                 "boxes": boxes,  # list[Tensor]，每张图 [Di, 4]
                 "scores": scores,  # list[Tensor]，每张图 [Di]
                 "labels": pred_labels,  # list[Tensor]，每张图 [Di]
-                "mask_logits": mask_logits,  # Tensor，[D, 2, 28, 28]
+                "mask_logits": mask_logits,  # Tensor，[D, 21, 28, 28]
             }

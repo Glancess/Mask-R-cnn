@@ -10,9 +10,15 @@ from torchvision.transforms import functional as F
 from torchvision.utils import draw_bounding_boxes, draw_segmentation_masks
 
 
+VOC_CLASSES = [
+    "background", "aeroplane", "bicycle", "bird", "boat", "bottle",
+    "bus", "car", "cat", "chair", "cow", "diningtable", "dog", "horse",
+    "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor",
+]
 
-def draw_result(image, boxes, masks, scores=None):
-    """输入原图 [3,H,W]、框 [N,4]、mask [N,H,W]；返回带标注的 PIL 图片。"""
+
+def draw_result(image, boxes, masks, labels, scores=None):
+    """输入原图、框、实例mask、类别[N]、可选分数；返回带标注的 PIL 图片。"""
     image = (image * 255).clamp(0, 255).to(torch.uint8)
     colors = ["red", "green", "blue", "orange", "purple", "cyan"]
     colors = [colors[i % len(colors)] for i in range(len(boxes))]
@@ -20,12 +26,11 @@ def draw_result(image, boxes, masks, scores=None):
         image = draw_segmentation_masks(
             image, masks.bool(), alpha=0.4, colors=colors
         )
-        if scores is None:
-            labels = ["person"] * len(boxes)
-        else:
-            labels = [f"person {score:.2f}" for score in scores.tolist()]
+        names = [VOC_CLASSES[label] for label in labels.tolist()]
+        if scores is not None:
+            names = [f"{name} {score:.2f}" for name, score in zip(names, scores.tolist())]
         image = draw_bounding_boxes(
-            image, boxes, labels=labels, colors=colors, width=2
+            image, boxes, labels=names, colors=colors, width=2
         )
     return F.to_pil_image(image)
 
@@ -53,6 +58,7 @@ def test_best_model(model, test_loader, device, save_dir, score_thresh=0.5, num_
         result = model(imageList.to(device), Train=False)
         boxes = result["boxes"][0]
         scores = result["scores"][0]
+        labels = result["labels"][0]
 
         # 按预测类别选 Mask 通道并 sigmoid，得到 [D,1,28,28]。
         masks = maskrcnn_inference(result["mask_logits"], result["labels"])[0]
@@ -60,19 +66,21 @@ def test_best_model(model, test_loader, device, save_dir, score_thresh=0.5, num_
         boxes = boxes[keep]
         scores = scores[keep]
         masks = masks[keep]
+        labels = labels[keep]  # 类别也要使用同一个 keep，避免与框错位。
 
         # test_loader 不打乱顺序；找到这张图片的名字。
         test_dataset = test_loader.dataset
-        index = test_dataset.indices[i]
-        name = os.path.splitext(test_dataset.dataset.imgs[index])[0]
+        name = os.path.splitext(test_dataset.imgs[i])[0]
         gt_count = len(targets[0]["boxes"])
         total_gt += gt_count
         total_pred += len(boxes)
         total_images += 1
         score_text = [round(x, 3) for x in scores[:5].tolist()]
+        class_text = [VOC_CLASSES[label] for label in labels[:5].tolist()]
         print(
             f"[Test {i + 1}/{len(test_loader)}] {name} | "
-            f"GT行人={gt_count}, 预测行人={len(boxes)}, 前5个分数={score_text}",
+            f"GT目标={gt_count}, 预测目标={len(boxes)}, "
+            f"前5个类别={class_text}, 分数={score_text}",
             flush=True,
         )
 
@@ -86,8 +94,10 @@ def test_best_model(model, test_loader, device, save_dir, score_thresh=0.5, num_
         else:
             masks = torch.empty((0, h, w), dtype=torch.bool, device=device)
 
-        gt = draw_result(image, targets[0]["boxes"], targets[0]["masks"])
-        pred = draw_result(image, boxes.cpu(), masks.cpu(), scores.cpu())
+        gt = draw_result(
+            image, targets[0]["boxes"], targets[0]["masks"], targets[0]["labels"]
+        )
+        pred = draw_result(image, boxes.cpu(), masks.cpu(), labels.cpu(), scores.cpu())
 
         # 左边 GT，右边预测；相同实例的框和 mask 使用相同颜色。
         comparison = Image.new("RGB", (w * 2, h + 24), "white")
@@ -100,8 +110,8 @@ def test_best_model(model, test_loader, device, save_dir, score_thresh=0.5, num_
         saved_images += 1
 
     print(
-        f"[Test完成] 图片={total_images}, GT行人总数={total_gt}, "
-        f"预测行人总数={total_pred}, 保存对比图={saved_images}",
+        f"[Test完成] 图片={total_images}, GT目标总数={total_gt}, "
+        f"预测目标总数={total_pred}, 保存对比图={saved_images}",
         flush=True,
     )
     print(f"对比图目录：{save_dir}（左GT，右预测，含框和实例mask）", flush=True)

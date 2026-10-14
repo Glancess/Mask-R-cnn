@@ -1,5 +1,19 @@
 # Mask R-CNN + FPN：按模块理解训练与实例分割
 
+## 当前 VOC2012 版（2026-10-14）
+
+- 运行 `python main.py`，仍然是每轮 train → val → 保存最佳参数，最后加载 best → test 画图。
+- `Dataset/Vocdataset.py` 读取类别图、实例图，返回 boxes、labels、masks、mask_valid；模型输出21类（包含背景）。
+- `Dataset/dataloader.py` 直接构造三个 loader，不调用旧的 `Dataset/split.py`，也不删除旧文件。
+- 自定义学习划分：官方 train1464 → train1264/val200；官方 val1449 → 最终 held-out test。固定 seed=0，不移动原数据。
+- 官方 VOC2012 test 没有公开分割 GT，因此这里的 test 不是官方测试集；不得用它挑参数或选择 best。
+- 如果旧权重见过新的 val/test，不能当成独立验证、测试；应按新划分重新训练。
+- Mask loss 用同一前景 proposal 分别裁剪 GT mask 和 mask_valid 到28×28，只对有效位置计算 BCE。
+- 有效图的 RoIAlign 会插值：保守忽略涉及无效采样的位置；无前景或无有效像素时返回可反传的零 loss。
+- `best_voc.pth` 只保存模型参数，避免覆盖以前的 `best.pth`。重新训练仍会覆盖同名 best_voc.pth，请另存需要保留的旧文件。
+- 最后预测全部留出 test，前10张类别、框、实例mask对比图保存到项目根目录 `testimage/`。
+- 未添加 AMP、DDP、scheduler 或 mAP。以下 PennFudan/旧模块说明保留作历史学习笔记，以本节为当前运行接口。
+
 ## 当前手写简化版运行方式（2026-10-13）
 
 你重新手写后的文件为 `Model/backbone.py`、`FPN.py`、`anchor.py`、`mask.py`、

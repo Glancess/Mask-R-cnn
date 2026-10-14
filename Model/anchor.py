@@ -28,6 +28,11 @@ class getFirstproposal(nn.Module):
             nms_thresh=0.7,
         )
 
+        # 我们在RPN的map上得到每个位置有 3 个anchor，every position is a center of processed image.So we need 还原 ，*scale得到原图的中心，有scale+ratio得到最初的proposal。然后根据
+        # delta去修改 tx ty tw th，这都是相对偏移。proposal（new）的中心=x中心+tx*w，Wnew=w*e^tw
+
+        # 所以此函数需要 imagelist得到原图的大小，因为要计算放缩了多少，*回去。
+
     def forward(self, Imagelist, P, targets=None, Train=True):
         """
                 targets = [
