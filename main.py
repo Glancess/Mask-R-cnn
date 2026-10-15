@@ -15,7 +15,7 @@ def main():
     best_path = os.path.join(root, "best_voc.pth")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_loader, val_loader, test_loader = getVOC_dataloader(
-        os.path.join(root, "data"), batch_size=2
+        os.path.join(root, "data"), batch_size=2, flip_prob=0.5
     )
     model = Mask().to(device)
     criterion = MaskLoss()

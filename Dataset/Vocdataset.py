@@ -9,8 +9,9 @@ from torchvision.transforms import functional as F
 
 
 class VocDataset(Dataset):
-    def __init__(self, root, image_set="train"):
+    def __init__(self, root, image_set="train", flip_prob=0.0):
         self.root = root
+        self.flip_prob = flip_prob  # 水平翻转概率；验证、测试保持0。
 
         # 官方接口负责读取图片列表、RGB图片、类别分割图。
         self.voc = VOCSegmentation(
@@ -100,7 +101,21 @@ class VocDataset(Dataset):
             "mask_valid": torch.as_tensor(mask_valid, dtype=torch.bool),
         }
 
-        return F.to_tensor(image), target
+        image = F.to_tensor(image)  # Tensor，[3,H,W]。
+
+        # 训练增强：图片、框、实例mask、有效像素图必须一起水平翻转。
+        if self.flip_prob > 0 and torch.rand(1).item() < self.flip_prob:
+            image = image.flip(-1)  # 最后一维是宽度，shape不变。
+            old_x1 = target["boxes"][:, 0].clone()
+            old_x2 = target["boxes"][:, 2].clone()
+            # xyxy框的右边界是x.max()+1，所以这里用w，而不是w-1。
+            target["boxes"][:, 0] = w - old_x2
+            target["boxes"][:, 2] = w - old_x1
+            target["masks"] = target["masks"].flip(-1)  # [N,H,W]。
+            target["mask_valid"] = target["mask_valid"].flip(-1)  # [H,W]。
+            # labels和实例顺序不变，仍然与每个框、mask一一对应。
+
+        return image, target
 
 
 if __name__ == "__main__":

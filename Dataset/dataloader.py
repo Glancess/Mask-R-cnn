@@ -76,7 +76,7 @@ def collate_fn(batch):
 #     return data_loader
 
 
-def getVOC_dataloader(root, batch_size=2, shuffle=True, num_workers=0):
+def getVOC_dataloader(root, batch_size=2, shuffle=True, num_workers=0, flip_prob=0.5):
     """
     root：包含 VOCdevkit/VOC2012 的目录。
     返回：train_loader、val_loader、test_loader，三份图片互不重叠。
@@ -84,10 +84,13 @@ def getVOC_dataloader(root, batch_size=2, shuffle=True, num_workers=0):
     # VOC2012 官方 test 没有公开分割 GT，采用下面的自定义学习划分。
     # 官方 train1464：1264训练、200验证；官方 val1449：最终留出测试。
     # 不搬动原图，不新建 split 文件。固定种子只固定划分，不固定验证抽样。
-    train_all = VocDataset(root, "train")
+    train_all = VocDataset(root, "train", flip_prob=flip_prob)
     train_dataset, val_dataset = random_split(
         train_all, [1264, 200], generator=torch.Generator().manual_seed(0)
     )
+    # random_split原本让两个Subset共用train_all，不能让val跟着训练增强。
+    # 验证改用独立Dataset，图片列表和划分下标不变，翻转概率默认为0。
+    val_dataset.dataset = VocDataset(root, "train")
     test_dataset = VocDataset(root, "val")
     train_loader = DataLoader(
         train_dataset,
