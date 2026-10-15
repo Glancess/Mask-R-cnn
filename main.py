@@ -21,7 +21,7 @@ def main():
     criterion = MaskLoss()
     optimizer = torch.optim.SGD(
         model.parameters(),
-        lr=0.001,
+        lr=0.0005,
         momentum=0.9,
         weight_decay=0.0005,  # 小数据集加一点正则，尝试减轻过拟合。
     )
