@@ -5,6 +5,7 @@ from .backbone import BackBone
 from .fpn import GetPx
 from torchvision.ops import MultiScaleRoIAlign
 from torchvision.models.detection.roi_heads import RoIHeads
+from Dataset.Vocdataset import VocDataset
 
 
 class Mask(nn.Module):
@@ -165,3 +166,28 @@ class Mask(nn.Module):
                 "labels": pred_labels,  # list[Tensor]，每张图 [Di]
                 "mask_logits": mask_logits,  # Tensor，[D, 21, 28, 28]
             }
+
+
+if __name__ == "__main__":
+    from Dataset.dataloader import collate_fn
+
+    dataset = VocDataset(
+        root="/Users/alen/Code/Pytorcc/projects/Mask-R-cnn/data",
+        image_set="train",
+    )
+
+    image, target = dataset[0]
+
+    print("image:", image.shape)
+    print("boxes:", target["boxes"].shape)
+    print("labels:", target["labels"].shape)
+    print("masks:", target["masks"].shape)
+
+    model = Mask()  # 如果你的定义包含 background
+
+    model.train()
+
+    imageList, targets = collate_fn([(image, target)])
+    output = model(imageList, targets)
+
+    print(output)

@@ -36,6 +36,7 @@ class VocDataset(Dataset):
         0   1   1   1   0
         0   0   0  15  15
         0   0  255 15  15
+        但是并不知道insance的划分
         """
 
         # 实例图：像素值表示属于第几个物体。
@@ -100,3 +101,15 @@ class VocDataset(Dataset):
         }
 
         return F.to_tensor(image), target
+
+
+if __name__ == "__main__":
+    dataset = VocDataset(
+        root="/Users/alen/Code/Pytorcc/projects/Mask-R-cnn/data",
+        image_set="train",
+    )
+
+    image, target = dataset[0]
+
+    print(image.shape)
+    print(target)
