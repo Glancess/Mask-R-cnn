@@ -1,5 +1,28 @@
 # Mask R-CNN + FPN：按模块理解训练与实例分割
 
+## 当前运行：完整COCO预训练 → VOC21类微调（2026-10-16）
+
+在项目根目录运行：
+
+```bash
+git pull --ff-only origin master
+python -u main.py
+```
+
+- 新文件 `Model/mask_coco.py`：先加载官方整套Mask R-CNN ResNet50-FPN的COCO权重，再替换检测分类/框回归输出层和Mask最后的21通道卷积。Mask反卷积层等可复用参数保留。
+- `main.py` 现在创建 `MaskCOCO()`；你的手写模型 `Model/mask.py` 保持原样，没有被替换或删除。
+- 第一次运行会自动下载官方权重，约170MB，需要服务器能访问 `download.pytorch.org`。不需要下载COCO数据集，实际微调仍用本地VOC2012。
+- 如果服务器不能联网，把 `maskrcnn_resnet50_fpn_coco-bf2d0c1e.pth` 放入 `torch.hub.get_dir()` 返回目录下的 `checkpoints/`，再运行。权重不提交Git。
+- 保留当前DataLoader：RGB归一化、右下补零、不缩放图片；不再调用官方模型的transform，避免重复归一化或图片/GT坐标不一致。
+- 保留train/val/test划分1264/200/1449、训练水平翻转0.5、SGD学习率0.0005、batch=2、100轮和每张图64个RoI。Backbone卷积都参与微调；官方预训练模块使用FrozenBatchNorm，保留其归一化统计量。
+- 保留你的 `MaskLoss`，包含 `mask_valid` 裁剪和masked BCE，不退回把255区域当背景的官方默认Mask loss。
+- 流程仍是每轮train → val loss → 保存best，全部轮数结束后加载best → test。验证不更新参数，仍然有随机anchor/RoI抽样。
+- 新权重另存为 `best_voc_coco.pth`，不覆盖手写版的 `best_voc.pth`；新测试对比图存 `testimage/coco/`。
+- 不加载旧的 `best_voc.pth` 继续训练，两种模型的参数名称、结构不同。旧 `predict_val.py` 仍用于手写版，不能用它加载新权重。
+- 这是保留当前预处理、loss和接口的COCO预训练对照，不是完整照搬官方训练配置。效果若改善，不能单独归因于手写代码好坏；这里没有计算mAP，也没有验证COCO预训练图片与VOC图片是否重合。
+
+官方权重说明：[Mask R-CNN ResNet50-FPN](https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.detection.maskrcnn_resnet50_fpn.html)。下面VOC数据说明仍适用；更早的PennFudan和旧目录说明仅作历史笔记，不是当前文件清单或运行接口。
+
 ## 当前 VOC2012 版（2026-10-14）
 
 - 运行 `python main.py`，仍然是每轮 train → val → 保存最佳参数，最后加载 best → test 画图。
@@ -9,7 +32,7 @@
 - 官方 VOC2012 test 没有公开分割 GT，因此这里的 test 不是官方测试集；不得用它挑参数或选择 best。
 - 如果旧权重见过新的 val/test，不能当成独立验证、测试；应按新划分重新训练。
 - Mask loss 用同一前景 proposal 分别裁剪 GT mask 和 mask_valid 到28×28，只对有效位置计算 BCE。
-- 有效图的 RoIAlign 会插值：保守忽略涉及无效采样的位置；无前景或无有效像素时返回可反传的零 loss。
+- 有效图的 RoIAlign 会插值：保守忽略涉及无效采样的位置。当前loss按这份VOC数据的正常前景/有效像素情况实现，未额外处理全空的情况。
 - `best_voc.pth` 只保存模型参数，避免覆盖以前的 `best.pth`。重新训练仍会覆盖同名 best_voc.pth，请另存需要保留的旧文件。
 - 最后预测全部留出 test，前10张类别、框、实例mask对比图保存到项目根目录 `testimage/`。
 - 未添加 AMP、DDP、scheduler 或 mAP。以下 PennFudan/旧模块说明保留作历史学习笔记，以本节为当前运行接口。

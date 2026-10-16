@@ -1,6 +1,6 @@
 # VOC2012 训练调整记录
 
-当前配置为文末的实验02：翻转概率0.5，SGD学习率0.0005。前面的实验01保留当时的配置和运行记录。
+当前配置为文末的实验03：完整COCO预训练，翻转概率0.5，SGD学习率0.0005，保留masked BCE。前面的实验保留当时的配置和运行记录。
 
 ## 实验01：训练集随机水平翻转（2026-10-15）
 
@@ -127,3 +127,53 @@ python -u main.py 2>&1 | tee train_voc_flip_lr0005.log
 
 - 服务器训练：待运行，没有本轮验证成绩。
 - 本地检查：main导入和三个DataLoader构造正常，数量仍为1264/200/1449，翻转概率仍为0.5/0/0；核对源码仅改SGD学习率一行，Git差异检查通过。本轮未进行完整训练，训练效果待服务器验证。
+
+## 实验03：完整COCO预训练后微调VOC（2026-10-16）
+
+### 启发与假设
+
+之前只有ResNet50加载ImageNet分类预训练，其余检测、分割模块从随机参数开始学习。
+本轮加载整套COCO检测/实例分割预训练参数，检验更好的初始化能否改善VOC上的表现。
+训练数据仍然是VOC，不需要下载COCO；不能把潜在改善直接解释为手写代码存在bug。
+
+用户最近一次报告：修改Mask loss以忽略255区域后，最佳val loss为1.2524，出现在epoch18；epoch30的train/val为0.4954/1.3429。
+这来自用户日志，不是本地复现成绩。Mask loss定义已变化，不能直接与实验01/02的旧BCE总loss做公平比较。
+
+### 具体调整
+
+- 从 `fa5d1a8` 开始，保留用户已经实现的masked BCE。
+- 新增 `Model/mask_coco.py`，加载 `MaskRCNN_ResNet50_FPN_Weights.DEFAULT`。
+- 使用官方Backbone+FPN、RPN、box/mask特征模块；只重新初始化VOC类别相关输出：21类分类、84维框偏移、21通道Mask卷积。
+- 前向返回字典仍与手写版一致，继续用原来的DataLoader、train、val、MaskLoss、test画图。
+- 不调用官方transform，不重复归一化、不额外缩放；保留当前微调数据划分和增强。
+- 保留batch=2、每图64个RoI、SGD lr=0.0005、momentum=0.9、weight_decay=0.0005、100轮；Backbone卷积都参与微调。
+- 官方预训练Backbone采用FrozenBatchNorm，与手写版固定BN统计量的实现不完全相同，因此也不是只改变一份权重文件的严格消融。
+- `main.py` 改用新模型，best另存为 `best_voc_coco.pth`，最终对比图另存 `testimage/coco/`，旧权重和旧图不覆盖。
+- 不自动续训，不新增AMP、DDP、scheduler或mAP。
+
+### 服务器运行
+
+先正常结束旧训练，再在项目根目录运行：
+
+```bash
+git pull --ff-only origin master
+python -u main.py 2>&1 | tee train_voc_coco.log
+```
+
+第一次运行需要下载约170MB官方权重；缓存已存在时直接使用缓存。数据目录仍是 `data/VOCdevkit/VOC2012`。
+本轮结果应与相同划分、相同masked BCE的手写版对照；正式成绩待服务器训练，不以smoke test代替效果评估。
+
+### 本地检查结果
+
+- 环境：CPU，torch 2.12.1 / torchvision 0.27.1，没有启动完整训练或服务器任务。
+- 已实际下载官方完整COCO权重并通过哈希校验；核对Backbone、FPN、RPN、box特征层、mask特征层及反卷积的参数，确认不是随机初始化。
+- 遍历全部VOC数据：train1264张/3016实例、val200张/491实例、test1449张/3427实例。图片集合不重叠；label范围、GT框边界、mask紧框和255有效图对应检查通过。
+- 原尺寸真实训练batch为 `[2,3,384,512]`，两张图有效尺寸均为375×500；没有降低RPN候选上限或改变RoI抽样配置来通过测试。
+- 训练输出为分类 `[128,21]`、回归 `[128,84]`、Mask `[32,21,28,28]`；五项loss有限，反向传播和SGD更新正常，Backbone及Mask输出层有更新/梯度。
+- 验证两张真实图片，loss有限，参数及FrozenBatchNorm的缓冲区不变，RPN临时training开关正确恢复。
+- 单独检查masked BCE：改变无效区域的GT像素不会改变loss；背景Mask通道没有梯度。
+- 不传GT的预测、框范围和Mask数量对应检查通过；保存/严格重载新state_dict后，同一输入的预测一致。
+- 现有test函数成功保存一张框+实例mask的左右对比图。此测试临时将显示阈值设为0以覆盖绘图路径，正式main仍使用0.5；未训练好的VOC头预测图不是效果评估。
+- 用替身验证main的100轮调度：每轮train/val、保留最佳权重、最后重载best并只调用一次test；没有真的训练100轮。
+- 所有Python模块语法和导入检查通过；Git忽略规则覆盖数据、权重、testimage、缓存、环境文件和训练日志。
+- 新实验最佳val loss、泛化效果和CUDA显存占用均待服务器实际训练确认。
